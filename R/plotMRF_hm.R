@@ -12,7 +12,7 @@
 #'@param main An optional character title for the plot
 
 #'@param plot_observed_vals Logical. If \code{TRUE} and the family of the fitted \code{MRFcov}
-#'model is \code{'binomial'} (or if the model is a \code{rosalia} model),
+#'model is \code{'binomial'},
 #'then raw observed occurrence and co-occurrence values will be extracted from \code{data} and overlaid on
 #'the resulting heatmap. Note, this option is not available for \code{bootstrap_MRF} models
 #'@param data Optional \code{dataframe} containing the input data where the left-most columns represent
@@ -156,7 +156,8 @@ plotMRF_hm = function(MRF_mod, node_names, main, plot_observed_vals, data){
       ggplot2::geom_tile(color = border, width = 0.95, height = 0.95, size = 1) +
       ggplot2::geom_text(ggplot2::aes(y = text.dat$Var1,
                                       x = text.dat$Var2,
-                                      label = as.factor(text.dat$label))) +
+                                      label = as.factor(text.dat$label)),
+                         size = 8 * 0.352777778) +
       ggplot2::scale_fill_gradient2(low = "mediumblue", high = 'red4', mid = "white",
                                     midpoint = 0, space = "Lab",
                                     name = "Correlation\ncoefficient") +

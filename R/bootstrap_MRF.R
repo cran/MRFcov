@@ -35,8 +35,7 @@
 #'\code{data} in each bootstrap iteration. Default is no subsampling (\code{sample_prop == 1})
 #'@param spatial Logical. If \code{TRUE}, spatial MRF / CRF models are bootstrapped using
 #'\code{\link{MRFcov_spatial}}. Note, GPS coordinates must be supplied as \code{coords} for spatial
-#'models to be run
-#'\code{mgcv::smooth.construct2(object = mgcv::s(Latitude, Longitude, bs = "gp"), data = coords, knots = NULL)}.
+#'models to be run.
 #'These regression splines will be included in each node-wise regression as covariates.
 #'This ensures that resulting node interaction parameters are estimated after accounting for
 #'possible spatial autocorrelation. Note that interpretation of spatial autocorrelation is difficult,
@@ -52,8 +51,9 @@
 #'   \item \code{direct_coef_upper90} and \code{direct_coef_lower90}: \code{dataframe}s
 #'   containing coefficient 95 percent and 5 percent quantiles taken from all
 #'   bootstrapped models across the iterations
-#'   \item \code{indirect_coef_mean}: \code{list} of matrices containing mean higher order coefficient values
-#'   taken from all bootstrapped models across the iterations
+#'   \item \code{indirect_coef_mean}: \code{list} of symmetric matrices
+#'   (one matrix for each covariate) containing mean effects of covariates
+#'   on pairwise interactions
 #'   \item \code{mean_key_coefs}: \code{list} of matrices of length \code{n_nodes}
 #'   containing mean covariate coefficient values and their relative importances
 #'   (using the formula \code{x^2 / sum (x^2)}
@@ -75,7 +75,7 @@
 #'@details \code{MRFcov} models are fit via cross-validation using
 #'\code{\link[glmnet]{cv.glmnet}}. For each model, the \code{data} is bootstrapped
 #'by shuffling row observations and fitting models to a subset of observations,
-#'using \code{dplyr::sample_n(data, nrow(data) * sample_prop, FALSE)},
+#'using \code{\link[dplyr]{sample_n}},
 #'to account for uncertainty in parameter estimates.
 #'Parameter estimates from the set of bootstrapped models are summarised
 #'to present means and confidence intervals (as 95 percent quantiles).
@@ -269,49 +269,14 @@ bootstrap_MRF <- function(data, n_bootstraps, sample_seed, symmetrise,
     ((.0001 * length(data)) + zeron) / ((.0001 * length(data)) + length(data))
   }
 
-  #### Create list of bootstrapped datasets; impute NAs if needed ####
-  booted_list <- vector('list', 100)
-
-  if(spatial){
-
-    shuffle_rows <- function(empty){
-      row_indices <- sample(seq_len(nrow(coords)), nrow(coords) * sample_prop, FALSE)
-      data <- data[row_indices, ]
-      coords <- coords[row_indices, ]
-      list(data = data, coords = coords)
-    }
-
-    booted_datas_coords <- lapply(booted_list, shuffle_rows)
-
-    booted_datas <- booted_datas_coords %>%
-      purrr::map('data')
-
-    if(nas_present){
-      booted_datas <- lapply(booted_datas, impute_nas)
-    }
-
-    booted_coords <- booted_datas_coords %>%
-      purrr::map('coords')
-
-    rm(booted_datas_coords, booted_list)
-
-  } else{
-
-     booted_datas <- lapply(booted_list, shuffle_rows)
-     rm(booted_list)
-
-    if(nas_present){
-      booted_datas <- lapply(booted_datas, impute_nas)
-    }
-
-  }
-
   #### Run MRFcov across iterations ####
   #Needs to be a sequence for running models repeatedly. Uses n_cores to define the length
   lambda1_seq <- seq_len(n_bootstraps / n_cores)
 
 
   #### Specify number of bootstrap replicates for each processing core to run ####
+  #Set the total number of repititions
+  total_reps <- n_bootstraps
   n_bootstraps <- suppressWarnings(lapply(split(seq_len(n_bootstraps),
                                                 lambda1_seq),
                                           length))
@@ -368,42 +333,45 @@ bootstrap_MRF <- function(data, n_bootstraps, sample_seed, symmetrise,
   if(parallel_compliant){
     cat('Fitting bootstrap_MRF models in parallel using', n_cores, 'cores... \n')
     #Export necessary data and variables to each cluster
-    clusterExport(NULL, c('lambda1_seq', 'booted_datas',
+    clusterExport(NULL, c('lambda1_seq',
                           'symmetrise', 'n_nodes', 'n_bootstraps',
-                          'n_covariates', 'family'), envir = environment())
+                          'n_covariates', 'family', 'nas_present',
+                          'spatial', 'data'),
+                  envir = environment())
 
     if(spatial){
-      clusterExport(NULL, c('booted_coords'), envir = environment())
       clusterExport(NULL, c('MRFcov_spatial'), envir = environment())
 
     }
 
-
     #Export necessary functions to each cluster
     clusterExport(NULL, c('MRFcov', 'prep_MRF_covariates'))
     clusterExport(NULL, 'countzero', envir = environment())
+    clusterExport(NULL, 'shuffle_rows', envir = environment())
+    clusterExport(NULL, 'sample_prop', envir = environment())
 
     #Export necessary libraries
     clusterEvalQ(cl, library(purrr))
     clusterEvalQ(cl, library(dplyr))
     clusterEvalQ(cl, library(data.table))
 
-    #Prep the list of booted datasets for MRF models
-    prepped_datas <-parLapply(NULL, booted_datas, prep_MRF_covariates,
-                         n_nodes = n_nodes)
-    rm(booted_datas)
-
-    clusterExport(NULL, c('prepped_datas'),
-                  envir = environment())
-
     lambda_results <- pbapply::pblapply(lambda1_seq, function(l) {
       booted_mrfs <- lapply(seq_len(n_bootstraps[[l]]), function(x) {
         sample_data <- sample(seq_len(100), 1)
 
         if(spatial){
-          mod <- suppressWarnings(MRFcov_spatial(data = prepped_datas[[sample_data]],
+          booted_data <- shuffle_rows(data)
+          sample_data <- booted_data$data
+
+          if(nas_present){
+            sample_data <- impute_nas(sample_data)
+          }
+
+          sample_data <- prep_MRF_covariates(sample_data, n_nodes)
+          sample_coords <- booted_data$coords
+          mod <- suppressWarnings(MRFcov_spatial(data = sample_data,
                                          symmetrise = symmetrise,
-                                         coords = booted_coords[[sample_data]],
+                                         coords = sample_coords,
                                          n_nodes = n_nodes,
                                          n_cores = 1,
                                          prep_covariates = FALSE,
@@ -412,18 +380,25 @@ bootstrap_MRF <- function(data, n_bootstraps, sample_seed, symmetrise,
                                          bootstrap = TRUE))
 
         } else {
-        mod <- suppressWarnings(MRFcov(data = prepped_datas[[sample_data]],
-                      symmetrise = symmetrise,
-                      n_nodes = n_nodes,
-                      n_cores = 1,
-                      prep_covariates = FALSE,
-                      n_covariates = n_covariates,
-                      family = family,
-                      bootstrap = TRUE))
+          sample_data <- shuffle_rows(data)
+
+          if(nas_present){
+            sample_data <- impute_nas(booted_data)
+          }
+
+          sample_data <- prep_MRF_covariates(sample_data, n_nodes)
+          mod <- suppressWarnings(MRFcov(data = sample_data,
+                                         symmetrise = symmetrise,
+                                         n_nodes = n_nodes,
+                                         n_cores = 1,
+                                         prep_covariates = FALSE,
+                                         n_covariates = n_covariates,
+                                         family = family,
+                                         bootstrap = TRUE))
         }
 
-        list(direct_coefs = mod$direct_coefs,
-             indirect_coefs = mod$indirect_coefs)
+        list(direct_coefs = as.matrix(mod$direct_coefs),
+             indirect_coefs = as.matrix(mod$indirect_coefs))
   })
 
     #Gather direct effect estimates from all bootstrap samples
@@ -470,7 +445,7 @@ bootstrap_MRF <- function(data, n_bootstraps, sample_seed, symmetrise,
                                 Mean_coefficient = cov_summary[, 2])
       cov_df <- cov_df[order(-abs(cov_df[, 2])),]
       })
-    names(key_covariates) <- colnames(prepped_datas[[1]])[1:n_nodes]
+    names(key_covariates) <- colnames(data)[1:n_nodes]
 
     #Calculate mean indirect interaction estimates from bootstrapped models
     indirect_coef_list <- booted_mrfs %>%
@@ -495,34 +470,49 @@ bootstrap_MRF <- function(data, n_bootstraps, sample_seed, symmetrise,
 
  #### If parallel loading fails, or if n_cores = 1, use lapply instead ####
       cat('Fitting bootstrap_MRF models in sequence using 1 core... \n')
-      prepped_datas <- lapply(booted_datas, prep_MRF_covariates,
-                           n_nodes = n_nodes)
-      rm(booted_datas)
 
       lambda_results <- pbapply::pblapply(lambda1_seq, function(l) {
         booted_mrfs <- lapply(seq_len(n_bootstraps[[l]]), function(x) {
           sample_data <- sample(seq_len(100), 1)
 
           if(spatial){
-            mod <- suppressWarnings(MRFcov_spatial(data = prepped_datas[[sample_data]],
+            booted_data <- shuffle_rows(data)
+            sample_data <- booted_data$data
+
+            if(nas_present){
+              sample_data <- impute_nas(sample_data)
+            }
+
+            sample_data <- prep_MRF_covariates(sample_data, n_nodes)
+            sample_coords <- booted_data$coords
+
+            # Use invisible to prevent printing of timing messages in each iteration
+            invisible(utils::capture.output(mod <- MRFcov_spatial(data = sample_data,
                                                    symmetrise = symmetrise,
-                                                   coords = booted_coords[[sample_data]],
+                                                   coords = sample_coords,
                                                    n_nodes = n_nodes,
                                                    n_cores = 1,
                                                    prep_covariates = FALSE,
                                                    n_covariates = n_covariates,
                                                    family = family,
-                                                   bootstrap = TRUE))
+                                                   bootstrap = TRUE)))
 
           } else {
-            mod <- suppressWarnings(MRFcov(data = prepped_datas[[sample_data]],
+            sample_data <- shuffle_rows(data)
+
+            if(nas_present){
+              sample_data <- impute_nas(booted_data)
+            }
+
+            sample_data <- prep_MRF_covariates(sample_data, n_nodes)
+            invisible(utils::capture.output(mod <- MRFcov(data = sample_data,
                                            symmetrise = symmetrise,
                                            n_nodes = n_nodes,
                                            n_cores = 1,
                                            prep_covariates = FALSE,
                                            n_covariates = n_covariates,
                                            family = family,
-                                           bootstrap = TRUE))
+                                           bootstrap = TRUE)))
           }
 
           list(direct_coefs = mod$direct_coefs,
@@ -570,7 +560,7 @@ bootstrap_MRF <- function(data, n_bootstraps, sample_seed, symmetrise,
                                Mean_coefficient = cov_summary[, 2])
           cov_df <- cov_df[order(-abs(cov_df[, 2])), ]
         })
-        names(key_covariates) <- colnames(prepped_datas[[1]])[1:n_nodes]
+        names(key_covariates) <- colnames(data)[1:n_nodes]
 
         #Calculate mean indirect interaction coefficients from bootstrap samps
         indirect_coef_list <- booted_mrfs %>%
@@ -590,7 +580,6 @@ bootstrap_MRF <- function(data, n_bootstraps, sample_seed, symmetrise,
              indirect_coefs = indirect_coef_means)
       })
     }
-  rm(prepped_datas)
 
   #### Calculate summary statistics of coefficients from bootstrapped models ####
   #Name each list element by its iteration value
@@ -604,7 +593,7 @@ bootstrap_MRF <- function(data, n_bootstraps, sample_seed, symmetrise,
   all_direct_coef_means <- apply(array(unlist(all_direct_coef_list),
                             c(nrow(lambda_results[[1]]$raw_coefs[[1]]),
                               ncol(lambda_results[[1]]$raw_coefs[[1]]),
-                              n_bootstraps)), c(1, 2), mean)
+                              total_reps)), c(1, 2), mean)
   rownames(all_direct_coef_means) <- rownames(lambda_results[[1]]$raw_coefs[[1]])
   colnames(all_direct_coef_means) <- colnames(lambda_results[[1]]$raw_coefs[[1]])
 
@@ -618,7 +607,7 @@ bootstrap_MRF <- function(data, n_bootstraps, sample_seed, symmetrise,
   all_direct_coef_upper90 <- apply(array(unlist(all_direct_coef_list),
                                 c(nrow(lambda_results[[1]]$raw_coefs[[1]]),
                                   ncol(lambda_results[[1]]$raw_coefs[[1]]),
-                                  n_bootstraps)), c(1, 2),
+                                  total_reps)), c(1, 2),
                            function(x){quantile(x, probs = 0.95)})
   rownames(all_direct_coef_upper90) <- rownames(lambda_results[[1]]$raw_coefs[[1]])
   colnames(all_direct_coef_upper90) <- colnames(lambda_results[[1]]$raw_coefs[[1]])
@@ -626,7 +615,7 @@ bootstrap_MRF <- function(data, n_bootstraps, sample_seed, symmetrise,
   all_direct_coef_lower90 <- apply(array(unlist(all_direct_coef_list),
                                  c(nrow(lambda_results[[1]]$raw_coefs[[1]]),
                                    ncol(lambda_results[[1]]$raw_coefs[[1]]),
-                                   n_bootstraps)), c(1, 2),
+                                   total_reps)), c(1, 2),
                            function(x){quantile(x, probs = 0.05)})
   rownames(all_direct_coef_lower90) <- rownames(lambda_results[[1]]$raw_coefs[[1]])
   colnames(all_direct_coef_lower90) <- colnames(lambda_results[[1]]$raw_coefs[[1]])
