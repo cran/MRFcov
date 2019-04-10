@@ -46,8 +46,8 @@ non-negative counts (\code{family = "poisson"}) or binomial 1s and 0s (\code{fam
 \item{spatial}{Logical. If \code{TRUE}, spatial MRF / CRF models are bootstrapped using
 \code{\link{MRFcov_spatial}}. Note, GPS coordinates must be supplied as \code{coords} for spatial
 models to be run.
-These regression splines will be included in each node-wise regression as covariates.
-This ensures that resulting node interaction parameters are estimated after accounting for
+Smoothed spatial splines will be included in each node-wise regression as covariates.
+This ensures resulting node interaction parameters are estimated after accounting for
 possible spatial autocorrelation. Note that interpretation of spatial autocorrelation is difficult,
 and so it is recommended to compare predictive capacities spatial and non-spatial CRFs through
 the \code{\link{predict_MRF}} function}
@@ -89,8 +89,7 @@ values (if found) are imputed in each bootstrap iteration.
 \details{
 \code{MRFcov} models are fit via cross-validation using
 \code{\link[glmnet]{cv.glmnet}}. For each model, the \code{data} is bootstrapped
-by shuffling row observations and fitting models to a subset of observations,
-using \code{\link[dplyr]{sample_n}},
+by shuffling row observations and fitting models to a subset of observations
 to account for uncertainty in parameter estimates.
 Parameter estimates from the set of bootstrapped models are summarised
 to present means and confidence intervals (as 95 percent quantiles).
@@ -99,14 +98,15 @@ to present means and confidence intervals (as 95 percent quantiles).
 \donttest{
 data("Bird.parasites")
 
-# Perform 100 bootstrap replicates in total
+# Perform 2 quick bootstrap replicates using 70\% of observations
 bootedCRF <- bootstrap_MRF(data = Bird.parasites,
                           n_nodes = 4,
                           family = 'binomial',
-                          n_cores = 3)
+                          sample_prop = 0.7,
+                          n_bootstraps = 2)
 
 
-# Using spatial coordinates for a spatial CRF
+# Small example of using spatial coordinates for a spatial CRF
 Latitude <- sample(seq(120, 140, length.out = 100), nrow(Bird.parasites), TRUE)
 Longitude <- sample(seq(-19, -22, length.out = 100), nrow(Bird.parasites), TRUE)
 coords <- data.frame(Latitude = Latitude, Longitude = Longitude)
@@ -114,7 +114,8 @@ bootedSpatial <- bootstrap_MRF(data = Bird.parasites, n_nodes = 4,
                              family = 'binomial',
                              spatial = TRUE,
                              coords = coords,
-                             n_cores = 3)}
+                             sample_prop = 0.5,
+                             n_bootstraps = 2)}
 }
 \seealso{
 \code{\link{MRFcov}}, \code{\link{MRFcov_spatial}},

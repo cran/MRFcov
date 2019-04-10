@@ -38,7 +38,9 @@
 #'estimate occurrence probabilities (on the extreme end, this can result in intercept-only
 #'models being fitted for the nodes in question). The function will issue a warning in this case.
 #'If nodes occur in more than 95 percent of observations, this will return an error as the cross-validation
-#'step will generally be unable to proceed.
+#'step will generally be unable to proceed. For \code{family = 'poisson'} models, all returned
+#'coefficients are estimated on the identity scale AFTER using a nonparanormal transformation.
+#'See \code{vignette("Gaussian_Poisson_CRFs")} for details of interpretation
 #'@param bootstrap Logical. Used by \code{\link{bootstrap_MRF}} to reduce memory usage
 #'
 #'@return A \code{list} containing:
@@ -49,17 +51,16 @@
 #'     indirect effects of each covariate on pairwise node interactions
 #'    \item \code{direct_coefs}: \code{matrix} of direct effects of each parameter on
 #'    each outcome node. For \code{family = 'binomial'} models, all coefficients are
-#'    estimated on the logit scale. For \code{family = 'poisson'} models, coefficients
-#'    are estimated on the identity scale AFTER standardising variables using the
-#'    root mean square transformation. See \code{vignette("Gaussian_Poisson_CRFs")} for
-#'    details of interpretation
+#'    estimated on the logit scale.
 #'    \item \code{param_names}: Character string of covariate parameter names
 #'    \item \code{mod_type}: A character stating the type of model that was fit
 #'    (used in other functions)
 #'    \item \code{mod_family}: A character stating the family of model that was fit
 #'    (used in other functions)
-#'    \item \code{poiss_sc_factors}: A vector of the root mean square scaling factors
-#'    used to standardise \code{poisson} variables (only returned if \code{family = "poisson"})
+#'    \item \code{poiss_sc_factors}: A matrix of the estimated negative binomial or
+#'    poisson parameters for each raw  node variable (only returned if \code{family = "poisson"}).
+#'    These are needed for converting coefficients back to their original distribution, and are
+#'    used for prediction purposes only
 #'    }
 #'
 #'
@@ -91,11 +92,11 @@
 #'are on roughly the same scale, as the resulting parameter estimates are
 #'unified into a Markov Random Field using the specified \code{symmetrise} function.
 #'Counts for \code{poisson} variables, which are often not on the same scale,
-#'will therefore be standardised using a root mean square transformation
-#'\code{x = x / sqrt(mean(x ^ 2))}. These transformed counts
+#'will therefore be normalised with a nonparanormal transformation
+#'\code{x = qnorm(rank(log2(x + 0.01)) / (length(x) + 1))}. These transformed counts
 #'will be used in a \code{(family = "gaussian")}
-#'model and their respective scaling factors returned so that coefficients
-#'can be unscaled for interpretation (this unscaling is
+#'model and their respective raw distribution parameters returned so that coefficients
+#'can be back-transformed for interpretation (this back-transformation is
 #'performed automatatically by other functions including \code{\link{predict_MRF}}
 #'and \code{\link{cv_MRF_diag}}). Gaussian variables are not automatically transformed, so
 #'if they cover quite different ranges and scales, then it is recommended to scale them prior to fitting
@@ -175,6 +176,15 @@ MRFcov <- function(data, symmetrise,
     }
   }
 
+  if(is.null(colnames(data))){
+    if(n_nodes < ncol(data)){
+      colnames(data) <- c(paste0('sp', seq_len(n_nodes)),
+                          paste0('cov', seq_len(ncol(data) - n_nodes)))
+    } else {
+      colnames(data) <- paste0('sp', seq_len(n_nodes))
+    }
+  }
+
   if(n_nodes < 2){
     stop('Cannot generate a graphical model with less than 2 nodes',
          call. = FALSE)
@@ -221,18 +231,18 @@ MRFcov <- function(data, symmetrise,
   }
 
   #### Specify default number of folds for cv.glmnet based on data size ####
-    if(nrow(data) < 150){
-      # If less than 150 observations, use leave-one-out cv
-      n_folds <- rep(nrow(data), n_nodes)
+  if(nrow(data) < 150){
+    # If less than 150 observations, use leave-one-out cv
+    n_folds <- rep(nrow(data), n_nodes)
+  } else {
+    # If > 150 but < 250 observations, use 15-fold cv
+    if(nrow(data) < 250){
+      n_folds <- rep(15, n_nodes)
     } else {
-      # If > 150 but < 250 observations, use 15-fold cv
-      if(nrow(data) < 250){
-        n_folds <- rep(15, n_nodes)
-      } else {
-        # else use the default for cv.glmnet (10-fold cv)
-        n_folds <- rep(10, n_nodes)
-      }
+      # else use the default for cv.glmnet (10-fold cv)
+      n_folds <- rep(10, n_nodes)
     }
+  }
 
   # For binomial models, change folds for any very rare or very common nodes
   # to leave-one-out or 50-fold cv
@@ -241,7 +251,7 @@ MRFcov <- function(data, symmetrise,
     # Issue warnings if any nodes are too rare, errors if too common for analysis to proceed
     if(any((colSums(data[, 1:n_nodes]) / nrow(data)) < 0.025)){
       cat('The following are very rare (occur in < 2.5% of observations); interpret with caution:',
-                 colnames(data[ , 1:n_nodes][which((colSums(data[, 1:n_nodes]) / nrow(data)) < 0.05)]),
+          colnames(data[ , 1:n_nodes][which((colSums(data[, 1:n_nodes]) / nrow(data)) < 0.05)]),
           '...\n')
     }
 
@@ -277,18 +287,45 @@ MRFcov <- function(data, symmetrise,
 
   }
 
-  #### Use sqrt mean transformation for Poisson variables ####
+  #### Use paranormal transformation for Poisson variables ####
   if(family == 'poisson'){
-    cat('Poisson variables will be standardised by their square root means. Please
-            refer to the "poiss_sc_factors" for coefficient interpretations ...\n')
-    square_root_mean = function(x) {sqrt(mean(x ^ 2))}
-    poiss_sc_factors <- apply(data[, 1:n_nodes], 2, square_root_mean)
-    data[, 1:n_nodes] <- apply(data[, 1:n_nodes], 2,
-                               function(x) x / square_root_mean(x))
+    cat('Poisson variables will be transformed using a nonparanormal...\n')
+
+    #square_root_mean = function(x) {sqrt(mean(x ^ 2))}
+    #poiss_sc_factors <- apply(data[, 1:n_nodes], 2, square_root_mean)
+    #data[, 1:n_nodes] <- apply(data[, 1:n_nodes], 2,
+    #                           function(x) x / square_root_mean(x))
+
+    # Function to estimate parameters of a nb distribution
+    nb_params = function(x){
+      MASS::fitdistr(x, densfun = "negative binomial")$estimate
+    }
+
+    # Function to estimate parameters of a poisson distribution
+    poiss_params = function(x){
+      MASS::fitdistr(x, densfun = "poisson")$estimate
+    }
+
+    # Function to transform counts using nonparanormal
+    paranorm = function(x){
+      ranks <- rank(log2(x + 0.01))
+      stats::qnorm(ranks / (length(x) + 1))
+    }
+
+    # Calculate raw parameters
+    suppressWarnings(poiss_sc_factors <- try(apply(data[, 1:n_nodes],
+                                                   2, nb_params), silent = TRUE))
+
+    if(inherits(poiss_sc_factors, 'try-error')){
+      suppressWarnings(poiss_sc_factors <- apply(data[, 1:n_nodes],
+                                                 2, poiss_params))
+    }
+
+    data[, 1:n_nodes] <- apply(data[, 1:n_nodes], 2, paranorm)
     family <- 'gaussian'
     return_poisson <- TRUE
 
-    } else {
+  } else {
     return_poisson <- FALSE
   }
 
@@ -305,12 +342,13 @@ MRFcov <- function(data, symmetrise,
   #### Extract sds of variables for later back-conversion of coefficients ####
   . <- NULL
   mrf_sds <- as.vector(t(data.frame(mrf_data) %>%
-                            dplyr::summarise_all(dplyr::funs(sd(.)))))
+                           dplyr::summarise_all(dplyr::funs(sd(.)))))
 
-  if(range(mrf_sds)[2] > 1.5){
+  if(range(mrf_sds, na.rm = TRUE)[2] > 1.5){
     mrf_sds <- rep(1, length(mrf_sds))
   } else {
     mrf_sds[mrf_sds < 1] <- 1
+    mrf_sds[is.na(mrf_sds)] <- 1
   }
 
   #### Gather parameter values needed for indexing and naming output objects ####
@@ -379,11 +417,12 @@ MRFcov <- function(data, symmetrise,
                           'n_folds'),
                   envir = environment())
 
-   #### Use function 'cv.glmnet' from package glmnet for cross-validation
-   # Each node-wise regression will be optimised separately using cv, reducing user-bias ####
-      clusterEvalQ(cl, library(glmnet))
+    #### Use function 'cv.glmnet' from package glmnet for cross-validation
+    # Each node-wise regression will be optimised separately using cv, reducing user-bias ####
+    clusterEvalQ(cl, library(glmnet))
     mrf_mods <- pbapply::pblapply(seq_len(n_nodes), function(i) {
-      y.vars <- which(grepl(colnames(mrf_data)[i], colnames(mrf_data)) == T)
+      #y.vars <- which(grepl(colnames(mrf_data)[i], colnames(mrf_data)) == T)
+      y.vars <- which(endsWith(colnames(mrf_data), colnames(mrf_data)[i]) == T)
       mod <- try(cv.glmnet(x = mrf_data[, -y.vars],
                            y = mrf_data[,i], family = family, alpha = 1,
                            nfolds = n_folds[i], weights = rep(1, nrow(mrf_data)),
@@ -402,10 +441,10 @@ MRFcov <- function(data, symmetrise,
       # If errors still persist, may need to feed in the lambda sequence manually
       if(inherits(mod, 'try-error')){
         mod <- try(cv.glmnet(x = mrf_data[, -y.vars],
-                         y = mrf_data[,i], family = family, alpha = 1,
-                         nfolds = n_folds[i], weights = rep(1, nrow(mrf_data)),
-                         lambda = rev(seq(0.0001, 1, length.out = 100)),
-                         intercept = TRUE, standardize = TRUE, maxit = 55000),
+                             y = mrf_data[,i], family = family, alpha = 1,
+                             nfolds = n_folds[i], weights = rep(1, nrow(mrf_data)),
+                             lambda = rev(seq(0.0001, 1, length.out = 100)),
+                             intercept = TRUE, standardize = TRUE, maxit = 55000),
                    silent = TRUE)
       }
 
@@ -417,12 +456,12 @@ MRFcov <- function(data, symmetrise,
         zero_coef_matrix <- Matrix::Matrix(zero_coefs, sparse = TRUE)
         zero_coef_matrix@Dimnames <- list(names(zero_coefs),'s0')
         glmnet_fit = list(a0 = coef(glm(mrf_data[,i] ~ 1,
-                                      family = family)),
+                                        family = family)),
                           beta = zero_coef_matrix,
                           lambda = 1)
         attr(glmnet_fit, 'class') <- c('lognet','glmnet')
         mod <- list(lambda = 1, glmnet.fit = glmnet_fit,
-                       lambda.min = 1)
+                    lambda.min = 1)
         attr(mod, 'class') <- 'cv.glmnet'
 
       }
@@ -435,7 +474,8 @@ MRFcov <- function(data, symmetrise,
     cat('Fitting MRF models in sequence using 1 core ...\n')
     #If parallel is not supported or n_cores = 1, use lapply instead
     mrf_mods <- pbapply::pblapply(seq_len(n_nodes), function(i) {
-      y.vars <- which(grepl(colnames(mrf_data)[i], colnames(mrf_data)) == T)
+      #y.vars <- which(grepl(colnames(mrf_data)[i], colnames(mrf_data)) == T)
+      y.vars <- which(endsWith(colnames(mrf_data), colnames(mrf_data)[i]) == T)
       mod <- try(cv.glmnet(x = mrf_data[, -y.vars],
                            y = mrf_data[,i], family = family, alpha = 1,
                            nfolds = n_folds[i], weights = rep(1, nrow(mrf_data)),
@@ -452,10 +492,10 @@ MRFcov <- function(data, symmetrise,
 
       if(inherits(mod, 'try-error')){
         mod <- try(cv.glmnet(x = mrf_data[, -y.vars],
-                         y = mrf_data[,i], family = family, alpha = 1,
-                         nfolds = n_folds[i], weights = rep(1, nrow(mrf_data)),
-                         lambda = rev(seq(0.0001, 1, length.out = 100)),
-                         intercept = TRUE, standardize = TRUE, maxit = 55000),
+                             y = mrf_data[,i], family = family, alpha = 1,
+                             nfolds = n_folds[i], weights = rep(1, nrow(mrf_data)),
+                             lambda = rev(seq(0.0001, 1, length.out = 100)),
+                             intercept = TRUE, standardize = TRUE, maxit = 55000),
                    silent = TRUE)
       }
 
@@ -480,11 +520,11 @@ MRFcov <- function(data, symmetrise,
 
 
   #### Gather coefficient parameters from penalized regressions ####
-    mrf_coefs <- lapply(mrf_mods, function(x){
-      coefs <- as.vector(t(as.matrix(coef(x, s = 'lambda.min'))))
-      names(coefs) <- dimnames(t(as.matrix(coef(x, s = 'lambda.min'))))[[2]]
-      coefs
-    })
+  mrf_coefs <- lapply(mrf_mods, function(x){
+    coefs <- as.vector(t(as.matrix(coef(x, s = 'lambda.min'))))
+    names(coefs) <- dimnames(t(as.matrix(coef(x, s = 'lambda.min'))))[[2]]
+    coefs
+  })
 
   rm(mrf_mods)
 
@@ -543,15 +583,15 @@ MRFcov <- function(data, symmetrise,
       # If max, keep the coefficient with the larger absolute value
       coef_matrix_upper_new <- ifelse(abs(coef_matrix_upper) > abs(coef_matrix.lower),
                                       coef_matrix_upper, coef_matrix.lower)
-      }
+    }
 
-     if(check_directs){
-     # For indirect interactions, conditional relationships can only occur if
-     # a direct interaction is found
-       direct_upper <- direct_upper[upper.tri(direct_upper)]
-       direct_upper[direct_upper > 0] <- 1
-       coef_matrix_upper_new <- coef_matrix_upper_new * direct_upper
-       }
+    if(check_directs){
+      # For indirect interactions, conditional relationships can only occur if
+      # a direct interaction is found
+      direct_upper <- direct_upper[upper.tri(direct_upper)]
+      direct_upper[direct_upper > 0] <- 1
+      coef_matrix_upper_new <- coef_matrix_upper_new * direct_upper
+    }
 
     coef_matrix_sym <- matrix(0, n_nodes, n_nodes)
     intercepts <- diag(coef_matrix)
@@ -627,55 +667,55 @@ MRFcov <- function(data, symmetrise,
   #### Calculate relative importances of coefficients by scaling each coef
   #by the input variable's standard deviation ####
   if(!bootstrap){
-  scaled_direct_coefs <- sweep(as.matrix(direct_coefs[, 2 : ncol(direct_coefs)]),
-                               MARGIN = 2, mrf_sds, `/`)
-  coef_rel_importances <- t(apply(scaled_direct_coefs, 1, function(i) (i^2) / sum(i^2)))
-  mean_key_coefs <- lapply(seq_len(n_nodes), function(x){
-    if(length(which(coef_rel_importances[x, ] > 0.01)) == 1){
-      node_coefs <- data.frame(Variable = names(which((coef_rel_importances[x, ] > 0.01) == T)),
-                               Rel_importance = coef_rel_importances[x, which(coef_rel_importances[x, ] > 0.01)],
-                               Standardised_coef = scaled_direct_coefs[x, which(coef_rel_importances[x, ] > 0.01)],
-                               Raw_coef = direct_coefs[x, 1 + which(coef_rel_importances[x, ] > 0.01)])
-    } else {
-      node_coefs <- data.frame(Variable = names(coef_rel_importances[x, which(coef_rel_importances[x, ] > 0.01)]),
-                               Rel_importance = coef_rel_importances[x, which(coef_rel_importances[x, ] > 0.01)],
-                               Standardised_coef = as.vector(t(scaled_direct_coefs[x, which(coef_rel_importances[x, ] > 0.01)])),
-                               Raw_coef = as.vector(t(direct_coefs[x, 1 + which(coef_rel_importances[x, ] > 0.01)])))
-    }
+    scaled_direct_coefs <- sweep(as.matrix(direct_coefs[, 2 : ncol(direct_coefs)]),
+                                 MARGIN = 2, mrf_sds, `/`)
+    coef_rel_importances <- t(apply(scaled_direct_coefs, 1, function(i) (i^2) / sum(i^2)))
+    mean_key_coefs <- lapply(seq_len(n_nodes), function(x){
+      if(length(which(coef_rel_importances[x, ] > 0.01)) == 1){
+        node_coefs <- data.frame(Variable = names(which((coef_rel_importances[x, ] > 0.01) == T)),
+                                 Rel_importance = coef_rel_importances[x, which(coef_rel_importances[x, ] > 0.01)],
+                                 Standardised_coef = scaled_direct_coefs[x, which(coef_rel_importances[x, ] > 0.01)],
+                                 Raw_coef = direct_coefs[x, 1 + which(coef_rel_importances[x, ] > 0.01)])
+      } else {
+        node_coefs <- data.frame(Variable = names(coef_rel_importances[x, which(coef_rel_importances[x, ] > 0.01)]),
+                                 Rel_importance = coef_rel_importances[x, which(coef_rel_importances[x, ] > 0.01)],
+                                 Standardised_coef = as.vector(t(scaled_direct_coefs[x, which(coef_rel_importances[x, ] > 0.01)])),
+                                 Raw_coef = as.vector(t(direct_coefs[x, 1 + which(coef_rel_importances[x, ] > 0.01)])))
+      }
 
-    rownames(node_coefs) <- NULL
+      rownames(node_coefs) <- NULL
 
-    node_coefs <- node_coefs[order(-node_coefs[, 2]), ]
-  })
-  names(mean_key_coefs) <- rownames(direct_coefs)
+      node_coefs <- node_coefs[order(-node_coefs[, 2]), ]
+    })
+    names(mean_key_coefs) <- rownames(direct_coefs)
   }
 
-#### Return as a list ####
-if(!bootstrap){
-if(return_poisson){
-  return(list(graph = interaction_matrix_sym[[1]],
-              intercepts = interaction_matrix_sym[[2]],
-              direct_coefs = direct_coefs,
-              indirect_coefs = indirect_coefs,
-              param_names = colnames(mrf_data),
-              key_coefs = mean_key_coefs,
-              mod_type = 'MRFcov',
-              mod_family = 'poisson',
-              poiss_sc_factors = poiss_sc_factors))
-}  else {
-  return(list(graph = interaction_matrix_sym[[1]],
-              intercepts = interaction_matrix_sym[[2]],
-              direct_coefs = direct_coefs,
-              indirect_coefs = indirect_coefs,
-              param_names = colnames(mrf_data),
-              key_coefs = mean_key_coefs,
-              mod_type = 'MRFcov',
-              mod_family = family))
+  #### Return as a list ####
+  if(!bootstrap){
+    if(return_poisson){
+      return(list(graph = interaction_matrix_sym[[1]],
+                  intercepts = interaction_matrix_sym[[2]],
+                  direct_coefs = direct_coefs,
+                  indirect_coefs = indirect_coefs,
+                  param_names = colnames(mrf_data),
+                  key_coefs = mean_key_coefs,
+                  mod_type = 'MRFcov',
+                  mod_family = 'poisson',
+                  poiss_sc_factors = poiss_sc_factors))
+    }  else {
+      return(list(graph = interaction_matrix_sym[[1]],
+                  intercepts = interaction_matrix_sym[[2]],
+                  direct_coefs = direct_coefs,
+                  indirect_coefs = indirect_coefs,
+                  param_names = colnames(mrf_data),
+                  key_coefs = mean_key_coefs,
+                  mod_type = 'MRFcov',
+                  mod_family = family))
 
-}
-} else {
-  #If bootstrap function is called, only return necessary parameters to save memory
-  return(list(direct_coefs = direct_coefs,
-              indirect_coefs = indirect_coefs))
-}
+    }
+  } else {
+    #If bootstrap function is called, only return necessary parameters to save memory
+    return(list(direct_coefs = direct_coefs,
+                indirect_coefs = indirect_coefs))
+  }
 }
