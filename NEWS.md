@@ -1,3 +1,13 @@
+# MRFcov 1.0.40
+*   Improved nonparanormal mapping of predictions for discrete variables
+*   Option to remove progress bar in multicore estimation, significantly speeding up analysis runs
+
+# MRFcov 1.0.39
+*   Improvement for the detection of infinite values in data and coordinates
+
+# MRFcov 1.0.38
+*   Option to prep spatial splines separately to allow efficient out-of-sample cross-validation
+
 # MRFcov 1.0.37
 *   More detailed work-throughs of examples in the vignettes
 *   Fixed typo in Bird_Parasite_CRF vignette

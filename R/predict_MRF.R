@@ -15,6 +15,7 @@
 #'by cross-multiplication (\code{TRUE} by default; \code{FALSE} when used in other functions)
 #'@param n_cores Positive integer stating the number of processing cores to split the job across.
 #'Default is \code{1} (no parallelisation)
+#'@param progress_bar Logical. Progress bar in pbapply is used if \code{TRUE}, but this slows estimation.
 #'@return A \code{matrix} containing predictions for each observation in \code{data}. If
 #'\code{family = "binomial"}, a second element containing binary
 #'predictions for nodes is returned.
@@ -59,7 +60,8 @@
 #'
 #'@export
 #'
-predict_MRF <- function(data, MRF_mod, prep_covariates = TRUE, n_cores){
+predict_MRF <- function(data, MRF_mod, prep_covariates = TRUE, n_cores,
+                        progress_bar = FALSE){
 
   if(missing(n_cores)){
     n_cores <- 1
@@ -67,6 +69,14 @@ predict_MRF <- function(data, MRF_mod, prep_covariates = TRUE, n_cores){
 
   #### If n_cores > 1, check parallel library loading ####
   if(n_cores > 1){
+
+    # Progress bar significantly slows estimation, set to FALSE unless specified
+    if(progress_bar){
+      pbapply::pboptions(style = 1, char = "+", type = 'timer')
+    } else {
+      pbapply::pboptions(type="none")
+    }
+
     #Initiate the n_cores parallel clusters
     cl <- makePSOCKcluster(n_cores)
     setDefaultCluster(cl)
@@ -155,11 +165,24 @@ predict_MRF <- function(data, MRF_mod, prep_covariates = TRUE, n_cores){
      ranks <- rank(log2(x + 0.01))
      stats::qnorm(ranks / (length(x) + 1))
     }
-   data[, 1:n_nodes] <- apply(data[, 1:n_nodes], 2, paranorm)
 
-    #for(i in seq_len(n_nodes)){
-      #data[, i] <- data[, i] / MRF_mod$poiss_sc_factors[[i]]
-    #}
+    # Generate random draws from each node's estimated distribution so that rankings
+    # of predictions are mapped to the original data distribution
+    if(length(nrow(MRF_mod$poiss_sc_factors)) != 0){
+      dist_mappings <- do.call(cbind, lapply(seq_len(n_nodes), function(x){
+        c(0, stats::rnbinom(100, size = MRF_mod$poiss_sc_factors[1, x],
+                       mu = MRF_mod$poiss_sc_factors[2, x]))
+      }))
+      # Else use qpois
+    } else {
+      dist_mappings <- do.call(cbind, lapply(seq_len(n_nodes), function(x){
+        c(0, stats::rpois(100, lambda = MRF_mod$poiss_sc_factors[x]))
+      }))
+    }
+    colnames(dist_mappings) <- colnames(data)[1:n_nodes]
+    data[, 1:n_nodes] <- apply(rbind(data[, 1:n_nodes],
+                                    dist_mappings), 2,
+                              paranorm)[1:nrow(data), ]
   }
 
   # Prep the dataset by cross-multiplication (TRUE by default; FALSE when used in other functions)
@@ -190,27 +213,26 @@ predict_MRF <- function(data, MRF_mod, prep_covariates = TRUE, n_cores){
       }))
     }
     colnames(predictions) <- node_names
+    colnames(dist_mappings) <- colnames(predictions)
 
-  # Convert negative predictions to zeros
-    predictions[predictions < 0] <- 0
+    # Compare predictions to draws from the node's estimated discrete distribution
+    # for the copula mapping
+    ranks <- apply(rbind(predictions, apply(dist_mappings, 2, paranorm)), 2, rank)
+    ranks <- ranks / (max(ranks) + 1)
+    ranks <- ranks[1:nrow(predictions),]
 
-  # Back-transform linear predictions using the poisson scale factors
-    #for(i in seq_len(n_nodes)){
-        #predictions[, i] <- predictions[, i] * MRF_mod$poiss_sc_factors[[i]]
-    #}
-    ranks <- apply(predictions, 2, rank)
-
-    # If raw nodes were negative binomially distributed, use qbinom
+    # If raw nodes were negative binomially distributed, use qbinom to
+    # draw predictions based on rank quantiles
     if(length(nrow(MRF_mod$poiss_sc_factors)) != 0){
       predictions <- do.call(cbind, lapply(seq_len(n_nodes), function(x){
-        stats::qnbinom(p = ranks[,x] / (nrow(ranks) + 1),
+        stats::qnbinom(p = ranks[,x],
                 size = MRF_mod$poiss_sc_factors[1, x],
                 mu = MRF_mod$poiss_sc_factors[2, x])
     }))
       # Else use qpois
     } else {
       predictions <- do.call(cbind, lapply(seq_len(n_nodes), function(x){
-        stats::qpois(p = ranks[,x] / (nrow(ranks) + 1),
+        stats::qpois(p = ranks[,x],
                 lambda = MRF_mod$poiss_sc_factors[x])
       }))
     }

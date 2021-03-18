@@ -4,8 +4,19 @@
 \alias{MRFcov_spatial}
 \title{Spatially structured Markov Random Fields with covariates}
 \usage{
-MRFcov_spatial(data, symmetrise, prep_covariates, n_nodes, n_cores,
-  n_covariates, family, coords, bootstrap = FALSE)
+MRFcov_spatial(
+  data,
+  symmetrise,
+  prep_covariates,
+  n_nodes,
+  n_cores,
+  n_covariates,
+  family,
+  coords,
+  prep_splines = TRUE,
+  bootstrap = FALSE,
+  progress_bar = FALSE
+)
 }
 \arguments{
 \item{data}{A \code{dataframe}. The input data where the \code{n_nodes}
@@ -47,7 +58,7 @@ See \code{vignette("Gaussian_Poisson_CRFs")} for details of interpretation}
 \item{coords}{A two-column \code{dataframe} (with \code{nrow(coords) == nrow(data)})
 representing the spatial coordinates of each observation in \code{data}. Ideally, these
 coordinates will represent Latitude and Longitude GPS points for each observation. The coordinates
-are used to create smoothed spatial regression splines via
+are used to create smoothed Gaussian Process spatial regression splines via
 \code{\link[mgcv]{smooth.construct2}}.
 Here, the basis dimension of the smoothed term
 is chosen based on the number of unique GPS coordinates in \code{coords}.
@@ -62,7 +73,12 @@ possible spatial autocorrelation. Note that interpretation of spatial autocorrel
 and so it is recommended to compare predictive capacities spatial and non-spatial CRFs through
 the \code{\link{predict_MRF}} function}
 
+\item{prep_splines}{Logical. If spatial splines are already included in  \code{data}, set to
+\code{FALSE}. Default is \code{TRUE}}
+
 \item{bootstrap}{Logical. Used by \code{\link{bootstrap_MRF}} to reduce memory usage}
+
+\item{progress_bar}{Logical. Progress bar in pbapply is used if \code{TRUE}, but this slows estimation.}
 }
 \value{
 A \code{list} of all elements contained in a returned \code{\link{MRFcov}} object, with
