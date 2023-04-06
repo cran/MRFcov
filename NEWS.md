@@ -1,11 +1,11 @@
-# MRFcov 1.0.40
-*   Improved nonparanormal mapping of predictions for discrete variables
-*   Option to remove progress bar in multicore estimation, significantly speeding up analysis runs
-
 # MRFcov 1.0.39
-*   Improvement for the detection of infinite values in data and coordinates
+*   Patch to use replace = TRUE for bootstrapping
+*   Use probabilistic sampling for more realistic prediction metrics
 
 # MRFcov 1.0.38
+*   Improved nonparanormal mapping of predictions for discrete variables
+*   Option to remove progress bar in multicore estimation, significantly speeding up analysis runs
+*   Improvement for the detection of infinite values in data and coordinates
 *   Option to prep spatial splines separately to allow efficient out-of-sample cross-validation
 
 # MRFcov 1.0.37

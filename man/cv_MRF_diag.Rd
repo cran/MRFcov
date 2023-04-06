@@ -148,18 +148,18 @@ technically more sound
 data("Bird.parasites")
 # Generate boxplots of model predictive metrics
 cv_MRF_diag(data = Bird.parasites, n_nodes = 4,
-           n_cores = 3, family = 'binomial')
+           n_cores = 1, family = 'binomial')
 
 # Generate boxplots comparing the CRF to an MRF model (no covariates)
 cv_MRF_diag(data = Bird.parasites, n_nodes = 4,
-           n_cores = 3, family = 'binomial',
+           n_cores = 1, family = 'binomial',
            compare_null = TRUE)
 
-# Replicate 10-fold cross-validation 100 times
+# Replicate 10-fold cross-validation 10 times
 cv.preds <- cv_MRF_diag_rep(data = Bird.parasites, n_nodes = 4,
-                           n_cores = 3, family = 'binomial',
+                           n_cores = 1, family = 'binomial',
                            compare_null = TRUE,
-                           plot = FALSE, n_fold_runs = 100)
+                           plot = FALSE, n_fold_runs = 10)
 
 # Plot model sensitivity and \% true predictions
 library(ggplot2)
@@ -174,14 +174,13 @@ gridExtra::grid.arrange(
 
 # Create some sample Poisson data with strong correlations
 cov <- rnorm(500, 0.2)
-cov2 <- rnorm(500, 4)
-sp.2 <- ceiling(rnorm(500, 1)) + (cov * 2)
-sp.2[sp.2 < 0] <- 0
-poiss.dat <- data.frame(sp.1 = ceiling(rnorm(500, 1) + cov2 * 1.5),
-                       sp.2 = sp.2, sp.3 = (sp.2 * 2) + ceiling(rnorm(500, 0.1)))
-poiss.dat[poiss.dat < 0] <- 0
-poiss.dat$cov <- cov
-poiss.dat$cov2 <- cov2
+cov2 <- rnorm(500, 1)
+sp.2 <- rpois(500, lambda = exp(1.5 + (cov * 0.9)))
+poiss.dat <- data.frame(sp.1 = rpois(500, lambda = exp(0.5 + (cov * 0.3))),
+                       sp.2 = sp.2,
+                       sp.3 = rpois(500, lambda = exp(log(sp.2 + 1) + (cov * -0.5))),
+                       cov = cov,
+                       cov2 = cov2)
 
 # A CRF should produce a better fit (lower deviance, lower MSE)
 cvMRF.poiss <- cv_MRF_diag(data = poiss.dat, n_nodes = 3,
@@ -195,7 +194,7 @@ cvMRF.poiss <- cv_MRF_diag(data = poiss.dat, n_nodes = 3,
 Clark, NJ, Wells, K and Lindberg, O.
 Unravelling changing interspecific interactions across environmental gradients
 using Markov random fields. (2018). Ecology doi: 10.1002/ecy.2221
-\href{http://nicholasjclark.weebly.com/uploads/4/4/9/4/44946407/clark_et_al-2018-ecology.pdf}{Full text here}.
+\href{https://www.researchgate.net/publication/325184442_Unravelling_changing_interspecific_interactions_across_environmental_gradients_using_Markov_random_fields}{Full text here}.
 }
 \seealso{
 \code{\link{MRFcov}},

@@ -4,7 +4,8 @@
 #'using coefficients from an \code{\link{MRFcov}} or \code{\link{MRFcov_spatial}} object.
 #'
 #'@importFrom parallel makePSOCKcluster setDefaultCluster clusterExport stopCluster clusterEvalQ detectCores parLapply
-#'
+#'@importFrom stats rbinom
+
 #'@param data Dataframe. The input data to be predicted, where the \code{n_nodes}
 #'left-most variables are are variables that are represented by nodes in the graph from
 #'the \code{MRF_mod} model.
@@ -30,7 +31,7 @@
 #'@references Clark, NJ, Wells, K and Lindberg, O.
 #'Unravelling changing interspecific interactions across environmental gradients
 #'using Markov random fields. (2018). Ecology doi: 10.1002/ecy.2221
-#'\href{http://nicholasjclark.weebly.com/uploads/4/4/9/4/44946407/clark_et_al-2018-ecology.pdf}{Full text here}.
+#'\href{https://www.researchgate.net/publication/325184442_Unravelling_changing_interspecific_interactions_across_environmental_gradients_using_Markov_random_fields}{Full text here}.
 #'
 #'@examples
 #'\donttest{
@@ -85,7 +86,7 @@ predict_MRF <- function(data, MRF_mod, prep_covariates = TRUE, n_cores,
     test_load1 <- try(clusterEvalQ(cl, library(glmnet)), silent = TRUE)
 
     #If errors produced, iterate through other options for library loading
-    if(class(test_load1) == "try-error") {
+    if(inherits(test_load1, "try-error")) {
 
       #Try finding unique library paths using system.file()
       pkgLibs <- unique(c(sub("/glmnet$", "", system.file(package = "glmnet"))))
@@ -95,13 +96,13 @@ predict_MRF <- function(data, MRF_mod, prep_covariates = TRUE, n_cores,
       #Check again for errors loading libraries
       test_load2 <- try(clusterEvalQ(cl, library(glmnet)), silent = TRUE)
 
-      if(class(test_load2) == "try-error"){
+      if(inherits(test_load2, "try-error")){
 
         #Try loading the user's .libPath() directly
         clusterEvalQ(cl,.libPaths(as.character(.libPaths())))
         test_load3 <- try(clusterEvalQ(cl, library(glmnet)), silent = TRUE)
 
-        if(class(test_load3) == "try-error"){
+        if(inherits(test_load3, "try-error")){
 
           #Give up and use lapply instead!
           parallel_compliant <- FALSE
@@ -286,7 +287,15 @@ predict_MRF <- function(data, MRF_mod, prep_covariates = TRUE, n_cores,
 
 #### Return the appropriate predictions based on family ####
   if((MRF_mod$mod_family == 'binomial')){
-    binary_predictions <- ifelse(predictions >= 0.5, 1, 0)
+    binary_predictions <- matrix(NA, nrow = NROW(predictions),
+                                 ncol = NCOL(predictions))
+    for(i in 1:NCOL(binary_predictions)){
+      binary_predictions[,i] <- rbinom(n = NROW(binary_predictions),
+                                       size = 1,
+                                       prob = predictions[,i])
+    }
+    binary_predictions <- data.frame(binary_predictions)
+    colnames(binary_predictions) <- node_names
     return(list(Probability_predictions = round(predictions, 4),
            Binary_predictions = binary_predictions))
 
